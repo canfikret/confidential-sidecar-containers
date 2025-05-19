@@ -35,7 +35,7 @@ type RawAttestData struct {
 	RuntimeData string `json:"runtime_data" binding:"required"`
 }
 
-type releaseData struct {
+type ReleaseData struct {
 	// MAA endpoint which acts as authority to the key that needs to be released
 	MAAEndpoint string `json:"maa_endpoint" binding:"required"`
 	// AKV endpoint from which the key is released
@@ -279,7 +279,7 @@ func PostMAAAttest(c *gin.Context) {
 //     SKR policy when the secret was imported to the AKV.
 //   - KID is the key identifier of the secret to be retrieved.
 func PostKeyRelease(c *gin.Context) {
-	var newKeyReleaseData releaseData
+	var newKeyReleaseData ReleaseData
 
 	// Call BindJSON to bind the received JSON to releaseData
 	if err := c.ShouldBindJSON(&newKeyReleaseData); err != nil {
@@ -341,7 +341,7 @@ func PostKeyRelease(c *gin.Context) {
 }
 
 func PostCertRelease(c *gin.Context) {
-	var newCertReleaseData releaseData
+	var newCertReleaseData ReleaseData
 
 	// Call BindJSON to bind the received JSON to releaseData
 	if err := c.ShouldBindJSON(&newCertReleaseData); err != nil {
