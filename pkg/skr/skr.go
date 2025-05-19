@@ -39,7 +39,7 @@ Troubleshooting: https://github.com/microsoft/confidential-sidecar-containers/bl
 // information about the AKV, authority and the key to be released.
 //
 // The return type is a JWK key
-func SecureKeyRelease(identity common.Identity, certState attest.CertState, SKRKeyBlob common.KeyBlob, uvmInformation common.UvmInformation) (_ jwk.Key, err error) {
+func SecureObjectRelease(identity common.Identity, certState attest.CertState, SKRKeyBlob common.KeyBlob, uvmInformation common.UvmInformation, isCertRelease bool) (_ jwk.Key, err error) {
 	logrus.Info("Performing secure key release...")
 	logrus.Debugf("Releasing key blob: %v", SKRKeyBlob)
 
@@ -110,8 +110,15 @@ func SecureKeyRelease(identity common.Identity, certState attest.CertState, SKRK
 	// use the MAA token obtained from the AKV's authority to retrieve the key identified by kid. The ReleaseKey
 	// operation requires the private wrapping key to unwrap the encrypted key material released from
 	// the AKV.
-	logrus.Infof("Releasing key %s...", SKRKeyBlob.KID)
-	keyBytes, kty, err := SKRKeyBlob.AKV.ReleaseKey(maaToken, SKRKeyBlob.KID, privateWrappingKey)
+	var keyBytes []byte
+	var kty string
+	if isCertRelease {
+		logrus.Debugf("Releasing certificate %s...", SKRKeyBlob.KID)
+		keyBytes, kty, err = SKRKeyBlob.AKV.ReleaseKey(maaToken, SKRKeyBlob.KID, privateWrappingKey, true)
+	} else {
+		logrus.Infof("Releasing key %s...", SKRKeyBlob.KID)
+		keyBytes, kty, err = SKRKeyBlob.AKV.ReleaseKey(maaToken, SKRKeyBlob.KID, privateWrappingKey, false)
+	}
 	if err != nil {
 		logrus.Debugf("releasing the key %s failed. err: %s", SKRKeyBlob.KID, err.Error())
 		return nil, errors.Wrapf(err, "releasing the key %s failed", SKRKeyBlob.KID)

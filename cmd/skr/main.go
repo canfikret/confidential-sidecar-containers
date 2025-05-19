@@ -204,6 +204,7 @@ func setupServer(certState *attest.CertState, identity *common.Identity, uvmInfo
 	server.POST("/attest/raw", httpginendpoints.PostRawAttest)
 	server.POST("/attest/maa", httpginendpoints.PostMAAAttest)
 	server.POST("/key/release", httpginendpoints.PostKeyRelease)
+	server.POST("/cert/release", httpginendpoints.PostCertRelease)
 	httpginendpoints.SetServerReady()
 	server.Run(url)
 }

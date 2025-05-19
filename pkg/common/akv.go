@@ -24,8 +24,9 @@ import (
 )
 
 const (
-	AKVImportKeyRequestURITemplate  = "https://%s/keys/%s?%s"
-	AKVReleaseKeyRequestURITemplate = "https://%s/keys/%s/release?%s"
+	AKVImportKeyRequestURITemplate   = "https://%s/keys/%s?%s"
+	AKVReleaseKeyRequestURITemplate  = "https://%s/keys/%s/release?%s"
+	AKVReleaseCertRequestURITemplate = "https://%s/certificates/%s/release?%s"
 	// We use 2048-bit RSA cryptography
 	RSASize = 2048
 )
@@ -219,6 +220,7 @@ type ReleasePolicy struct {
 // ReleaseKey interface
 type releaseKeyRequest struct {
 	Target string `json:"target"`
+	Enc    string `json:"enc"`
 }
 
 type releaseKeyResponse struct {
@@ -241,9 +243,9 @@ type releaseKeyResponseJWSPayloadResponse struct {
 }
 
 type ReleaseKeyResponseKey struct {
-	Attributes    interface{}             `json:"attributes"`
-	Key           ReleaseKeyEncryptedKey  `json:"key"`
-	ReleasePolicy ReleaseKeyReleasePolicy `json:"release_policy"`
+	Attributes    interface{}                `json:"attributes"`
+	Key           ReleaseObjectEncryptedKey  `json:"key"`
+	ReleasePolicy ReleaseObjectReleasePolicy `json:"release_policy"`
 }
 
 type releaseKeyKeyHSM struct {
@@ -254,7 +256,7 @@ type releaseKeyKeyHSM struct {
 	SchemaVersion string      `json:"schema_version"`
 }
 
-type ReleaseKeyEncryptedKey struct {
+type ReleaseObjectEncryptedKey struct {
 	// KeyHSM is base64 representation of the releaseKeyKeyHSM structure
 	KeyHSM string   `json:"key_hsm"`
 	KID    string   `json:"kid"`
@@ -262,9 +264,30 @@ type ReleaseKeyEncryptedKey struct {
 	KeyOps []string `json:"key_ops"`
 }
 
-type ReleaseKeyReleasePolicy struct {
+type ReleaseObjectReleasePolicy struct {
 	ContentType string `json:"contentType"`
 	Data        string `json:"data"`
+}
+
+type releaseCertResponseJWSPayload struct {
+	Request  releaseCertResponseJWSPayloadRequest  `json:"request"`
+	Response releaseCertResponseJWSPayloadResponse `json:"response"`
+}
+
+type releaseCertResponseJWSPayloadRequest struct {
+	APIVersion string `json:"api-version"`
+	Enc        string `json:"enc"`
+	ID         string `json:"id"`
+	Nonce      string `json:"nonce"`
+}
+
+type releaseCertResponseJWSPayloadResponse struct {
+	Certificate ReleaseCertResponseKey `json:"certificate"`
+}
+
+type ReleaseCertResponseKey struct {
+	Key           ReleaseObjectEncryptedKey  `json:"key"`
+	ReleasePolicy ReleaseObjectReleasePolicy `json:"release_policy"`
 }
 
 // ImportPlaintextKey imports a plaintext key to a HSM-backed keyvault. The key is associated
@@ -324,10 +347,11 @@ func (akv AKV) ImportPlaintextKey(key interface{}, releasePolicy ReleasePolicy, 
 // the release policy. ReleaseKey uses the private key to locally unwrap the released secrets.
 // The private key is kept within the utility VM and hence is isolated with hardware-based
 // guarantees.
-func (akv AKV) ReleaseKey(maaTokenBase64 string, kid string, privateWrappingKey *rsa.PrivateKey) (_ []byte, _ string, err error) {
+func (akv AKV) ReleaseKey(maaTokenBase64 string, kid string, privateWrappingKey *rsa.PrivateKey, isCertRelease bool) (_ []byte, _ string, err error) {
 	// Construct release key request to AKV
 	request := releaseKeyRequest{
 		Target: maaTokenBase64,
+		Enc:    "CKM_RSA_AES_KEY_WRAP",
 	}
 	// Create HTTP POST request to a AKV service that requires authorization
 	// bearer token
@@ -337,6 +361,9 @@ func (akv AKV) ReleaseKey(maaTokenBase64 string, kid string, privateWrappingKey 
 	}
 
 	uri := fmt.Sprintf(AKVReleaseKeyRequestURITemplate, akv.Endpoint, kid, akv.APIVersion)
+	if isCertRelease {
+		uri = fmt.Sprintf(AKVReleaseCertRequestURITemplate, akv.Endpoint, kid, akv.APIVersion)
+	}
 
 	httpResponse, err := HTTPPRequest("POST", uri, releaseKeyJSONData, akv.BearerToken)
 	if err != nil {
@@ -354,7 +381,7 @@ func (akv AKV) ReleaseKey(maaTokenBase64 string, kid string, privateWrappingKey 
 		return nil, "", errors.Wrapf(err, "unmarshalling http response to releasekey response failed")
 	}
 
-	return _releaseKey(akv, AKVResponse.Value, privateWrappingKey)
+	return _releaseKey(akv, AKVResponse.Value, privateWrappingKey, isCertRelease)
 }
 
 // _releaseKey verifies and validates that the JWS the AKV is a genuine one before decrypting
@@ -366,7 +393,7 @@ func (akv AKV) ReleaseKey(maaTokenBase64 string, kid string, privateWrappingKey 
 // (5) Verify the certificate chain for the signer
 // (6) Ensure that the root of the certificate chain is trusted
 // (7) Unwrap the wrapped key from the payload
-func _releaseKey(akv AKV, AKVJWS string, privateWrappingKey *rsa.PrivateKey) (key []byte, kty string, err error) {
+func _releaseKey(akv AKV, AKVJWS string, privateWrappingKey *rsa.PrivateKey, isCertRelease bool) (key []byte, kty string, err error) {
 	// (1) Verify that it is a well formed JWS object
 	if err := VerifyJWSToken(AKVJWS); err != nil {
 		return nil, "", err
@@ -420,14 +447,24 @@ func _releaseKey(akv AKV, AKVJWS string, privateWrappingKey *rsa.PrivateKey) (ke
 		return nil, "", err
 	}
 
+	var payloadJSON interface{}
+	if isCertRelease {
+		payloadJSON = new(releaseCertResponseJWSPayload)
+	} else {
+		payloadJSON = new(releaseKeyResponseJWSPayload)
+	}
 	// (7) Unwrap the wrapped key from the signed payload
-	var payloadJSON releaseKeyResponseJWSPayload
 	if err := json.Unmarshal(payloadBytes, &payloadJSON); err != nil {
 		return nil, "", errors.Wrapf(err, "unmarshalling jws response payload failed")
 	}
 
 	// decode KeyHSM no-padding base64 url representation and retrieve the Ciphertext field
-	keyHSMBytes, err := base64.RawURLEncoding.DecodeString(payloadJSON.Response.Key.Key.KeyHSM)
+	var keyHSMBytes []byte
+	if isCertRelease {
+		keyHSMBytes, err = base64.RawURLEncoding.DecodeString(payloadJSON.(releaseCertResponseJWSPayload).Response.Certificate.Key.KeyHSM)
+	} else {
+		keyHSMBytes, err = base64.RawURLEncoding.DecodeString(payloadJSON.(releaseKeyResponseJWSPayload).Response.Key.Key.KeyHSM)
+	}
 	if err != nil {
 		return nil, "", errors.Wrapf(err, "decoding keyHSM failed")
 	}
@@ -443,10 +480,19 @@ func _releaseKey(akv AKV, AKVJWS string, privateWrappingKey *rsa.PrivateKey) (ke
 		return nil, "", errors.Wrapf(err, "decoding keyHSM's ciphertext failed")
 	}
 
-	key, err = RsaAESKeyUnwrap(payloadJSON.Request.Enc, ciphertext, privateWrappingKey)
+	if isCertRelease {
+		key, err = RsaAESKeyUnwrap(payloadJSON.(releaseCertResponseJWSPayload).Request.Enc, ciphertext, privateWrappingKey)
+	} else {
+		key, err = RsaAESKeyUnwrap(payloadJSON.(releaseKeyResponseJWSPayload).Request.Enc, ciphertext, privateWrappingKey)
+	}
 	if err != nil {
 		return nil, "", errors.Wrapf(err, "aes key unwrap failed")
 	}
 
-	return key, payloadJSON.Response.Key.Key.KTY, nil
+	if isCertRelease {
+		kty = payloadJSON.(releaseCertResponseJWSPayload).Response.Certificate.Key.KTY
+	} else {
+		kty = payloadJSON.(releaseKeyResponseJWSPayload).Response.Key.Key.KTY
+	}
+	return key, kty, nil
 }
