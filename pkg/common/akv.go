@@ -461,9 +461,9 @@ func _releaseKey(akv AKV, AKVJWS string, privateWrappingKey *rsa.PrivateKey, isC
 	// decode KeyHSM no-padding base64 url representation and retrieve the Ciphertext field
 	var keyHSMBytes []byte
 	if isCertRelease {
-		keyHSMBytes, err = base64.RawURLEncoding.DecodeString(payloadJSON.(releaseCertResponseJWSPayload).Response.Certificate.Key.KeyHSM)
+		keyHSMBytes, err = base64.RawURLEncoding.DecodeString(payloadJSON.(*releaseCertResponseJWSPayload).Response.Certificate.Key.KeyHSM)
 	} else {
-		keyHSMBytes, err = base64.RawURLEncoding.DecodeString(payloadJSON.(releaseKeyResponseJWSPayload).Response.Key.Key.KeyHSM)
+		keyHSMBytes, err = base64.RawURLEncoding.DecodeString(payloadJSON.(*releaseKeyResponseJWSPayload).Response.Key.Key.KeyHSM)
 	}
 	if err != nil {
 		return nil, "", errors.Wrapf(err, "decoding keyHSM failed")
@@ -481,18 +481,18 @@ func _releaseKey(akv AKV, AKVJWS string, privateWrappingKey *rsa.PrivateKey, isC
 	}
 
 	if isCertRelease {
-		key, err = RsaAESKeyUnwrap(payloadJSON.(releaseCertResponseJWSPayload).Request.Enc, ciphertext, privateWrappingKey)
+		key, err = RsaAESKeyUnwrap(payloadJSON.(*releaseCertResponseJWSPayload).Request.Enc, ciphertext, privateWrappingKey)
 	} else {
-		key, err = RsaAESKeyUnwrap(payloadJSON.(releaseKeyResponseJWSPayload).Request.Enc, ciphertext, privateWrappingKey)
+		key, err = RsaAESKeyUnwrap(payloadJSON.(*releaseKeyResponseJWSPayload).Request.Enc, ciphertext, privateWrappingKey)
 	}
 	if err != nil {
 		return nil, "", errors.Wrapf(err, "aes key unwrap failed")
 	}
 
 	if isCertRelease {
-		kty = payloadJSON.(releaseCertResponseJWSPayload).Response.Certificate.Key.KTY
+		kty = payloadJSON.(*releaseCertResponseJWSPayload).Response.Certificate.Key.KTY
 	} else {
-		kty = payloadJSON.(releaseKeyResponseJWSPayload).Response.Key.Key.KTY
+		kty = payloadJSON.(*releaseKeyResponseJWSPayload).Response.Key.Key.KTY
 	}
 	return key, kty, nil
 }
