@@ -387,21 +387,13 @@ func PostCertRelease(c *gin.Context) {
 		return
 	}
 
-	jwKey, err := skr.SecureObjectRelease(*identity, *certState, sorBlob, *uvmInfo, true)
+	certificate, err := skr.SecureCertificateRelease(*identity, *certState, sorBlob, *uvmInfo, true)
 	if err != nil {
 		c.JSON(http.StatusForbidden, gin.H{"error": err.Error()})
 		return
 	}
 
-	logrus.Debugf("Certificate released of type %s", jwKey.KeyType())
-
-	jwkJSONBytes, err := json.Marshal(jwKey)
-	if err != nil {
-		c.JSON(http.StatusForbidden, gin.H{"error": err.Error()})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{"certificate": string(jwkJSONBytes)})
+	c.JSON(http.StatusOK, gin.H{"certificate": string(certificate)})
 }
 
 func RegisterGlobalStates(certState *attest.CertState, identity *common.Identity, uvmInfo *common.UvmInformation) gin.HandlerFunc {

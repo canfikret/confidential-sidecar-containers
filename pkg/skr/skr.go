@@ -179,3 +179,86 @@ func SecureObjectRelease(identity common.Identity, certState attest.CertState, s
 		}
 	}
 }
+
+func SecureCertificateRelease(identity common.Identity, certState attest.CertState, SKRKeyBlob common.KeyBlob, uvmInformation common.UvmInformation, isCertRelease bool) (_ []byte, err error) {
+	logrus.Info("Performing secure certificate release...")
+	logrus.Debugf("Releasing key blob: %v", SKRKeyBlob)
+
+	// Retrieve an MAA token
+	var maaToken string
+
+	// Generate an RSA pair that will be used for wrapping material released from a keyvault. MAA
+	// expects the public wrapping key to be formatted as a JSON Web Key (JWK).
+
+	// generate rsa key pair
+	logrus.Trace("Generating RSA key pair...")
+	privateWrappingKey, err := rsa.GenerateKey(rand.Reader, common.RSASize)
+	if err != nil {
+		return nil, errors.Wrapf(err, "rsa key pair generation failed")
+	}
+
+	// construct the key blob
+	logrus.Info("Construct the key blob...")
+	jwkSetBytes, err := common.GenerateJWKSet(privateWrappingKey)
+	if err != nil {
+		return nil, errors.Wrapf(err, "generating key blob failed")
+	}
+
+	// Attest
+	logrus.Info("Attesting...")
+	maaToken, err = certState.Attest(SKRKeyBlob.Authority, jwkSetBytes, uvmInformation)
+	if err != nil {
+		return nil, errors.Wrapf(err, "attestation failed")
+	}
+
+	var ResourceIDTemplate string
+
+	// If endpoint contains managedhsm, request a token for managedhsm
+	// resource; otherwise for a vault
+	if ResourceIDTemplate = ResourceIdVault; strings.Contains(SKRKeyBlob.AKV.Endpoint, "managedhsm") {
+		ResourceIDTemplate = ResourceIdManagedHSM
+		logrus.Infof("Requesting token from %s", ResourceIDTemplate)
+	}
+
+	// retrieve an Azure authentication token for authenticating with AKV
+	if SKRKeyBlob.AKV.BearerToken == "" {
+		ctx, cancel := context.WithTimeout(context.Background(), msi.WorkloadIdentityRquestTokenTimeout)
+		defer cancel()
+		bearerToken := ""
+
+		if msi.WorkloadIdentityEnabled() {
+			logrus.Info("Requesting token for using workload identity.")
+			bearerToken, err = msi.GetAccessTokenFromFederatedToken(ctx, ResourceIDTemplate)
+			if err != nil {
+				return nil, errors.Wrapf(err, "retrieving authentication token using workload identity failed")
+			}
+		} else {
+			// 2. Interact with Azure Key Vault. The REST API of AKV requires
+			//     authentication using an Azure authentication token.
+			token, err := common.GetToken(ResourceIDTemplate, identity)
+			if err != nil {
+				return nil, errors.Wrapf(err, "retrieving authentication token failed")
+			}
+			bearerToken = token.AccessToken
+		}
+		logrus.Info("Retrieving Azure authentication token...")
+
+		// set the azure authentication token to the AKV instance
+		SKRKeyBlob.AKV.BearerToken = bearerToken
+	}
+	logrus.Debugf("AAD Token: %s ", SKRKeyBlob.AKV.BearerToken)
+
+	// use the MAA token obtained from the AKV's authority to retrieve the key identified by kid. The ReleaseKey
+	// operation requires the private wrapping key to unwrap the encrypted key material released from
+	// the AKV.
+	logrus.Debugf("Releasing certificate %s...", SKRKeyBlob.KID)
+	certificateBytes, _, err := SKRKeyBlob.AKV.ReleaseKey(maaToken, SKRKeyBlob.KID, privateWrappingKey, true)
+	if err != nil {
+		logrus.Debugf("releasing the key %s failed. err: %s", SKRKeyBlob.KID, err.Error())
+		return nil, errors.Wrapf(err, "releasing the key %s failed", SKRKeyBlob.KID)
+	}
+
+	logrus.Debugf("Certificate Released")
+
+	return certificateBytes, nil
+}
