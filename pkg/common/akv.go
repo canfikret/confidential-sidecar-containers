@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"hash"
+	"regexp"
 	"runtime"
 	"strings"
 
@@ -288,6 +289,7 @@ type releaseCertResponseJWSPayloadResponse struct {
 type ReleaseCertResponseKey struct {
 	Key           ReleaseObjectEncryptedKey  `json:"key"`
 	ReleasePolicy ReleaseObjectReleasePolicy `json:"release_policy"`
+	PemContent    string                     `json:"pem_content"`
 }
 
 // ImportPlaintextKey imports a plaintext key to a HSM-backed keyvault. The key is associated
@@ -381,6 +383,9 @@ func (akv AKV) ReleaseKey(maaTokenBase64 string, kid string, privateWrappingKey 
 		return nil, "", errors.Wrapf(err, "unmarshalling http response to releasekey response failed")
 	}
 
+	if isCertRelease {
+		return _releaseCert(akv, AKVResponse.Value, privateWrappingKey)
+	}
 	return _releaseKey(akv, AKVResponse.Value, privateWrappingKey, isCertRelease)
 }
 
@@ -495,4 +500,89 @@ func _releaseKey(akv AKV, AKVJWS string, privateWrappingKey *rsa.PrivateKey, isC
 		kty = payloadJSON.(*releaseKeyResponseJWSPayload).Response.Key.Key.KTY
 	}
 	return key, kty, nil
+}
+
+func _releaseCert(akv AKV, AKVJWS string, privateWrappingKey *rsa.PrivateKey) (key []byte, kty string, err error) {
+	// (1) Verify that it is a well formed JWS object
+	if err := VerifyJWSToken(AKVJWS); err != nil {
+		return nil, "", err
+	}
+
+	// (2) Use the thumbprint or first entry in the chain to obtain the public key of the signer
+	var header jwsHeader
+	if err := header.extractJWSTokenHeader(AKVJWS); err != nil {
+		return nil, "", err
+	}
+
+	leafCertificate, err := ParseX509Certificate(header.X5C[0])
+	if err != nil {
+		return nil, "", errors.Wrapf(err, "parsing certificate X5C[0] failed")
+	}
+
+	leafKey, ok := leafCertificate.PublicKey.(*rsa.PublicKey)
+	if !ok {
+		return nil, "", errors.Wrapf(err, "could not cast interface to rsa.PublicKey")
+	}
+
+	// (3) Signature validation of the JWS token
+	payloadBytes, err := ValidateJWSToken(AKVJWS, leafKey, jwa.SignatureAlgorithm(header.Alg))
+	if err != nil {
+		return nil, "", err
+	}
+
+	// (4) (5) and (6) Verify the leaf certificate using a cert chain that is rooted to the the system's cert pool
+	// windows does not have a system cert pool. for now we use the root certificate in the returned chain
+
+	// TO-DO for WCOW we will need to check the cert against the trusted pool of root CAs.
+	var roots *x509.CertPool
+
+	if runtime.GOOS == "windows" {
+		roots = x509.NewCertPool()
+
+		rootCertificate, err := ParseX509Certificate(header.X5C[len(header.X5C)-1])
+		if err != nil {
+			return nil, "", errors.Wrapf(err, "failed to parse root certificate X5C[%d]", len(header.X5C)-1)
+		}
+
+		roots.AddCert(rootCertificate)
+	} else {
+		roots, err = x509.SystemCertPool()
+		if err != nil {
+			return nil, "", errors.Wrapf(err, "could not generate a system cert pool")
+		}
+	}
+
+	if err := VerifyX509CertChain(akv.Endpoint, header.X5C, roots); err != nil {
+		return nil, "", err
+	}
+
+	var payloadJSON = new(releaseCertResponseJWSPayload)
+
+	// (7) Unwrap the wrapped key from the signed payload
+	if err := json.Unmarshal(payloadBytes, &payloadJSON); err != nil {
+		return nil, "", errors.Wrapf(err, "unmarshalling jws response payload failed")
+	}
+
+	// use regex to extract the encrypted private key from the PEM content
+	pattern := `(?s)-----BEGIN ENCRYPTED PRIVATE KEY-----\n(.*?)\n-----END ENCRYPTED PRIVATE KEY-----`
+	reg := regexp.MustCompile(pattern)
+	encryptedPrivateKey := reg.FindStringSubmatch(payloadJSON.Response.Certificate.PemContent)[1]
+	encryptedPrivateKey = strings.ReplaceAll(encryptedPrivateKey, "\n", "")
+	encryptedPrivateKeyBytes, err := base64.StdEncoding.DecodeString(encryptedPrivateKey)
+	if err != nil {
+		return nil, "", errors.Wrapf(err, "decoding encrypted private key failed")
+	}
+
+	privateKeyBytes, err := RsaAESKeyUnwrap(payloadJSON.Request.Enc, encryptedPrivateKeyBytes, privateWrappingKey)
+	if err != nil {
+		return nil, "", errors.Wrapf(err, "aes key unwrap failed")
+	}
+
+	privateKey := base64.StdEncoding.EncodeToString(privateKeyBytes)
+
+	output := reg.ReplaceAllString(payloadJSON.Response.Certificate.PemContent, fmt.Sprintf("-----BEGIN PRIVATE KEY-----\n%s\n-----END PRIVATE KEY-----", privateKey))
+
+	kty = payloadJSON.Response.Certificate.Key.KTY
+
+	return []byte(output), kty, nil
 }
