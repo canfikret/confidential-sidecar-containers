@@ -180,9 +180,9 @@ func SecureObjectRelease(identity common.Identity, certState attest.CertState, s
 	}
 }
 
-func SecureCertificateRelease(identity common.Identity, certState attest.CertState, SKRKeyBlob common.KeyBlob, uvmInformation common.UvmInformation, isCertRelease bool) (_ []byte, err error) {
+func SecureCertificateRelease(identity common.Identity, certState attest.CertState, skrKeyBlob common.KeyBlob, uvmInformation common.UvmInformation, isCertRelease bool) (_ []byte, err error) {
 	logrus.Info("Performing secure certificate release...")
-	logrus.Debugf("Releasing key blob: %v", SKRKeyBlob)
+	logrus.Debugf("Releasing key blob: %v", skrKeyBlob)
 
 	// Retrieve an MAA token
 	var maaToken string
@@ -206,7 +206,7 @@ func SecureCertificateRelease(identity common.Identity, certState attest.CertSta
 
 	// Attest
 	logrus.Info("Attesting...")
-	maaToken, err = certState.Attest(SKRKeyBlob.Authority, jwkSetBytes, uvmInformation)
+	maaToken, err = certState.Attest(skrKeyBlob.Authority, jwkSetBytes, uvmInformation)
 	if err != nil {
 		return nil, errors.Wrapf(err, "attestation failed")
 	}
@@ -215,13 +215,13 @@ func SecureCertificateRelease(identity common.Identity, certState attest.CertSta
 
 	// If endpoint contains managedhsm, request a token for managedhsm
 	// resource; otherwise for a vault
-	if ResourceIDTemplate = ResourceIdVault; strings.Contains(SKRKeyBlob.AKV.Endpoint, "managedhsm") {
+	if ResourceIDTemplate = ResourceIdVault; strings.Contains(skrKeyBlob.AKV.Endpoint, "managedhsm") {
 		ResourceIDTemplate = ResourceIdManagedHSM
 		logrus.Infof("Requesting token from %s", ResourceIDTemplate)
 	}
 
 	// retrieve an Azure authentication token for authenticating with AKV
-	if SKRKeyBlob.AKV.BearerToken == "" {
+	if skrKeyBlob.AKV.BearerToken == "" {
 		ctx, cancel := context.WithTimeout(context.Background(), msi.WorkloadIdentityRquestTokenTimeout)
 		defer cancel()
 		bearerToken := ""
@@ -244,18 +244,18 @@ func SecureCertificateRelease(identity common.Identity, certState attest.CertSta
 		logrus.Info("Retrieving Azure authentication token...")
 
 		// set the azure authentication token to the AKV instance
-		SKRKeyBlob.AKV.BearerToken = bearerToken
+		skrKeyBlob.AKV.BearerToken = bearerToken
 	}
-	logrus.Debugf("AAD Token: %s ", SKRKeyBlob.AKV.BearerToken)
+	logrus.Debugf("AAD Token: %s ", skrKeyBlob.AKV.BearerToken)
 
 	// use the MAA token obtained from the AKV's authority to retrieve the key identified by kid. The ReleaseKey
 	// operation requires the private wrapping key to unwrap the encrypted key material released from
 	// the AKV.
-	logrus.Debugf("Releasing certificate %s...", SKRKeyBlob.KID)
-	certificateBytes, _, err := SKRKeyBlob.AKV.ReleaseKey(maaToken, SKRKeyBlob.KID, privateWrappingKey, true)
+	logrus.Debugf("Releasing certificate %s...", skrKeyBlob.KID)
+	certificateBytes, _, err := skrKeyBlob.AKV.ReleaseKey(maaToken, skrKeyBlob.KID, privateWrappingKey, true)
 	if err != nil {
-		logrus.Debugf("releasing the key %s failed. err: %s", SKRKeyBlob.KID, err.Error())
-		return nil, errors.Wrapf(err, "releasing the key %s failed", SKRKeyBlob.KID)
+		logrus.Debugf("releasing the key %s failed. err: %s", skrKeyBlob.KID, err.Error())
+		return nil, errors.Wrapf(err, "releasing the key %s failed", skrKeyBlob.KID)
 	}
 
 	logrus.Debugf("Certificate Released")

@@ -503,15 +503,15 @@ func _releaseKey(akv AKV, akvJws string, privateWrappingKey *rsa.PrivateKey, isC
 	return key, kty, nil
 }
 
-func _releaseCert(akv AKV, AKVJWS string, privateWrappingKey *rsa.PrivateKey) (key []byte, kty string, err error) {
+func _releaseCert(akv AKV, akvJws string, privateWrappingKey *rsa.PrivateKey) (key []byte, kty string, err error) {
 	// (1) Verify that it is a well formed JWS object
-	if err := VerifyJWSToken(AKVJWS); err != nil {
+	if err := VerifyJWSToken(akvJws); err != nil {
 		return nil, "", err
 	}
 
 	// (2) Use the thumbprint or first entry in the chain to obtain the public key of the signer
 	var header jwsHeader
-	if err := header.extractJWSTokenHeader(AKVJWS); err != nil {
+	if err := header.extractJWSTokenHeader(akvJws); err != nil {
 		return nil, "", err
 	}
 
@@ -526,7 +526,7 @@ func _releaseCert(akv AKV, AKVJWS string, privateWrappingKey *rsa.PrivateKey) (k
 	}
 
 	// (3) Signature validation of the JWS token
-	payloadBytes, err := ValidateJWSToken(AKVJWS, leafKey, jwa.SignatureAlgorithm(header.Alg))
+	payloadBytes, err := ValidateJWSToken(akvJws, leafKey, jwa.SignatureAlgorithm(header.Alg))
 	if err != nil {
 		return nil, "", err
 	}
